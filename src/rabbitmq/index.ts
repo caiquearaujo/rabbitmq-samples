@@ -1,5 +1,6 @@
 import amqp from 'amqplib';
 import ApplicationError from '@/exceptions/ApplicationError';
+import Queue from './Queue';
 
 export interface EventData {
 	event: string;
@@ -14,7 +15,12 @@ export type EventHandler = (
 export default class RabbitMQ {
 	protected static conn?: amqp.Connection;
 
-	protected static consumer?: amqp.Channel;
+	protected static channels: {
+		consumer: amqp.Channel;
+		producer: amqp.Channel;
+	};
+
+	protected static queues: Record<string, Queue> = {};
 
 	protected static e: Array<EventHandler> = [];
 
@@ -25,7 +31,9 @@ export default class RabbitMQ {
 
 		try {
 			RabbitMQ.conn = await amqp.connect(host);
-			RabbitMQ.consumer = await RabbitMQ.conn.createChannel();
+
+			RabbitMQ.channels.consumer = await RabbitMQ.conn.createChannel();
+			RabbitMQ.channels.producer = await RabbitMQ.conn.createChannel();
 		} catch (error) {
 			console.log(error);
 			throw new ApplicationError(
@@ -36,114 +44,75 @@ export default class RabbitMQ {
 		}
 	}
 
-	public static async queue(
-		queue: string,
-		options: amqp.Options.AssertQueue
-	): Promise<void> {
-		if (!RabbitMQ.consumer) {
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Consumer channel is not created`
-			);
-		}
-
-		try {
-			await RabbitMQ.consumer.assertQueue(queue, options);
-		} catch (error) {
-			console.log(error);
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Queue ${queue} is not created to consumer channel`
-			);
-		}
+	public static registerEvent(e: EventHandler) {
+		RabbitMQ.e.push(e);
+		return RabbitMQ;
 	}
 
-	public static async consume(
-		queue: string,
-		onMessage: (msg: amqp.Message | null) => void
-	): Promise<void> {
-		if (!RabbitMQ.consumer) {
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Consumer channel is not created`
-			);
-		}
-
-		try {
-			await RabbitMQ.consumer.consume(queue, onMessage);
-		} catch (error) {
-			console.log(error);
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Cannot consume queue ${queue} from consumer channel`
-			);
-		}
+	public static registerQueue(queue: Queue) {
+		this.queues[queue.name()] = queue;
+		return RabbitMQ;
 	}
 
-	public static async produce(
+	public static async consumeFrom(queue: string) {
+		if (!RabbitMQ.queues[queue]) {
+			throw new ApplicationError(
+				500,
+				'RabbitMQ',
+				`Queue ${queue} is not registered`
+			);
+		}
+
+		RabbitMQ.queues[queue].assert(RabbitMQ.channels.consumer);
+		RabbitMQ.channels.consumer.consume(
+			queue,
+			msg => {
+				if (msg) {
+					RabbitMQ.handle(queue, msg.content.toString())
+						.then(
+							() => {
+								RabbitMQ.channels.consumer.ack(msg);
+							},
+							() => {
+								RabbitMQ.channels.consumer.nack(msg);
+							}
+						)
+						.catch(() => {
+							RabbitMQ.channels.consumer.nack(msg);
+						});
+				}
+			},
+			{
+				noAck: false,
+			}
+		);
+	}
+
+	public static async produceTo(
 		queue: string,
 		message: EventData
 	): Promise<void> {
-		if (!RabbitMQ.conn) {
+		if (!RabbitMQ.queues[queue]) {
 			throw new ApplicationError(
 				500,
 				'RabbitMQ',
-				'Connection is not established'
+				`Queue ${queue} is not registered`
 			);
 		}
 
-		try {
-			const channel = await RabbitMQ.conn.createChannel();
-			channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)));
-
-			console.log(`[->] New message sent to queue ${queue}`);
-			console.log(message);
-
-			await channel.close();
-		} catch (error) {
-			console.log(error);
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Cannot produce on queue ${queue}`
-			);
-		}
-	}
-
-	public static ack(msg: amqp.Message | null): void {
-		if (!RabbitMQ.consumer) {
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Consumer channel is not created`
-			);
-		}
-
-		if (msg) {
-			RabbitMQ.consumer.ack(msg);
-		}
-	}
-
-	public static async closeConsumer(): Promise<void> {
-		if (RabbitMQ.consumer) {
-			await RabbitMQ.consumer.close();
-		}
+		RabbitMQ.queues[queue].assert(RabbitMQ.channels.producer);
+		RabbitMQ.queues[queue].send(
+			RabbitMQ.channels.producer,
+			JSON.stringify(message)
+		);
 	}
 
 	public static async close(): Promise<void> {
 		if (RabbitMQ.conn) {
+			await RabbitMQ.channels.consumer.close();
+			await RabbitMQ.channels.producer.close();
 			await RabbitMQ.conn.close();
 		}
-
-		await RabbitMQ.closeConsumer();
-	}
-
-	public static event(e: EventHandler) {
-		RabbitMQ.e.push(e);
 	}
 
 	public static async handle(
@@ -158,5 +127,18 @@ export default class RabbitMQ {
 		await Promise.all(
 			RabbitMQ.e.map(async handler => handler(queue, data))
 		);
+	}
+
+	protected static async createChannel() {
+		if (!RabbitMQ.conn) {
+			throw new ApplicationError(
+				500,
+				'RabbitMQ',
+				'Connection is not established'
+			);
+		}
+
+		const channel = await RabbitMQ.conn.createChannel();
+		return channel;
 	}
 }

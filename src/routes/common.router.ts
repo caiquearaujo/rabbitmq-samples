@@ -15,7 +15,7 @@ const callable: TFnApplyToFastify = async (app: FastifyInstance) => {
 		let success: boolean;
 
 		try {
-			await RabbitMQ.produce('rabbitmqapisample_default_exchange', {
+			await RabbitMQ.produceTo('rabbitmqapisample_default_exchange', {
 				payload,
 				event,
 			});
