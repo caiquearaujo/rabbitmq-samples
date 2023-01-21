@@ -24,6 +24,7 @@
 		"url": "https://github.com/caiquearaujo/rabbitmq-samples/issues"
 	},
 	"devDependencies": {
+		"@types/amqplib": "^0.10.1",
 		"@types/jest": "^29.2.5",
 		"@types/module-alias": "^2.0.1",
 		"@types/node": "^18.11.18",
@@ -51,6 +52,7 @@
 		"@fastify/cors": "^8.2.0",
 		"@fastify/helmet": "^10.1.0",
 		"@fastify/rate-limit": "^7.6.0",
+		"amqplib": "^0.10.3",
 		"cross-env": "^7.0.3",
 		"dotenv": "^16.0.3",
 		"fastify": "^4.11.0",
