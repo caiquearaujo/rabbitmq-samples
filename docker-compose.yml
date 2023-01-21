@@ -1,0 +1,24 @@
+version: '3'
+services:
+  pulsar:
+    image: rabbitmq:3.11-management
+    hostname: rabbitmq
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    restart: always
+  api:
+    depends_on:
+      - rabbitmq
+    build:
+      dockerfile: Dockerfile.dev
+      context: ./
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/usr/app
+      - /usr/app/node_modules
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - NODE_ENV=development
