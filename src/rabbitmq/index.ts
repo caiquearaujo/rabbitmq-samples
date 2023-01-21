@@ -24,7 +24,10 @@ export default class RabbitMQ {
 
 	protected static e: Array<EventHandler> = [];
 
-	public static async connect(host: string): Promise<void> {
+	public static async connect(
+		host: string,
+		messagesAtTime = 1
+	): Promise<void> {
 		if (RabbitMQ.conn) {
 			return;
 		}
@@ -34,6 +37,8 @@ export default class RabbitMQ {
 
 			RabbitMQ.channels.consumer = await RabbitMQ.conn.createChannel();
 			RabbitMQ.channels.producer = await RabbitMQ.conn.createChannel();
+
+			RabbitMQ.channels.consumer.prefetch(messagesAtTime);
 		} catch (error) {
 			console.log(error);
 			throw new ApplicationError(
