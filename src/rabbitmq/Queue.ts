@@ -22,7 +22,16 @@ export default class Queue {
 		await channel.assertQueue(this._name, this._options);
 	}
 
-	public send(channel: amqp.Channel, msg: string) {
-		channel.sendToQueue(this._name, Buffer.from(msg));
+	public send(
+		channel: amqp.Channel,
+		msg: string,
+		options?: amqp.Options.Publish
+	) {
+		const localOptions = {
+			...options,
+			persistent: this._options.durable,
+		};
+
+		channel.sendToQueue(this._name, Buffer.from(msg), localOptions);
 	}
 }

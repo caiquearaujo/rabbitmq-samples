@@ -12,7 +12,7 @@ const callable: TFnApplyToFastify = async (app: FastifyInstance) => {
 
 		// register queues
 		RabbitMQ.registerQueue(
-			new Queue('rabbitmqapisample_default_exchange', {
+			new Queue('_rmq_default', {
 				durable: false,
 			})
 		);
@@ -21,7 +21,7 @@ const callable: TFnApplyToFastify = async (app: FastifyInstance) => {
 		await RabbitMQ.connect(RABBITMQ_URL);
 
 		// // default exchange queue listener
-		RabbitMQ.consumeFrom('rabbitmqapisample_default_exchange');
+		RabbitMQ.consumeFrom('_rmq_default');
 
 		fastify.addHook('onClose', async () => {
 			await RabbitMQ.close();
