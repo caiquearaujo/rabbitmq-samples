@@ -1,32 +1,36 @@
 import amqp from 'amqplib';
 import ApplicationError from '@/exceptions/ApplicationError';
-import { EventData, EventHandler, IQueue } from './BaseQueue';
+import { IConsumer } from './Consumer';
+import { IExchange } from './Exchange';
+import { EventData } from './BaseQueue';
 
 export default class RabbitMQ {
-	protected static conn?: amqp.Connection;
+	protected static _conn?: amqp.Connection;
 
-	protected static channels: {
+	protected static _channels: {
 		consumer?: amqp.Channel;
 		producer?: amqp.Channel;
 	} = {};
 
-	protected static queues: Record<string, IQueue> = {};
+	protected static _consumers: Array<IConsumer> = [];
 
 	public static async connect(
 		host: string,
 		messagesAtTime = 1
 	): Promise<void> {
-		if (RabbitMQ.conn) {
+		if (RabbitMQ._conn) {
 			return;
 		}
 
 		try {
-			RabbitMQ.conn = await amqp.connect(host);
+			RabbitMQ._conn = await amqp.connect(host);
 
-			RabbitMQ.channels.consumer = await RabbitMQ.conn.createChannel();
-			RabbitMQ.channels.producer = await RabbitMQ.conn.createChannel();
+			RabbitMQ._channels.consumer =
+				await RabbitMQ._conn.createChannel();
+			RabbitMQ._channels.producer =
+				await RabbitMQ._conn.createChannel();
 
-			RabbitMQ.channels.consumer.prefetch(messagesAtTime);
+			RabbitMQ._channels.consumer.prefetch(messagesAtTime);
 		} catch (error) {
 			console.log(error);
 			throw new ApplicationError(
@@ -37,21 +41,13 @@ export default class RabbitMQ {
 		}
 	}
 
-	public static register(queue: IQueue) {
-		this.queues[queue.name()] = queue;
+	public static consumers(...consumers: Array<IConsumer>) {
+		this._consumers = consumers;
 		return RabbitMQ;
 	}
 
-	public static async consumeFrom(queue: string) {
-		if (!RabbitMQ.queues[queue]) {
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Queue ${queue} is not registered`
-			);
-		}
-
-		if (!RabbitMQ.channels.consumer) {
+	public static async subscribe() {
+		if (!RabbitMQ._channels.consumer) {
 			throw new ApplicationError(
 				500,
 				'RabbitMQ',
@@ -59,50 +55,18 @@ export default class RabbitMQ {
 			);
 		}
 
-		const channel = RabbitMQ.channels.consumer;
-
-		await RabbitMQ.queues[queue].asConsumer(channel);
-		channel.consume(
-			RabbitMQ.queues[queue].name(),
-			msg => {
-				if (msg) {
-					RabbitMQ.handle(
-						RabbitMQ.queues[queue].name(),
-						msg.content.toString(),
-						RabbitMQ.queues[queue].events()
-					)
-						.then(
-							() => {
-								channel.ack(msg);
-							},
-							() => {
-								channel.nack(msg);
-							}
-						)
-						.catch(() => {
-							channel.nack(msg);
-						});
-				}
-			},
-			{
-				noAck: false,
-			}
-		);
+		this._consumers.forEach(consumer => {
+			consumer.prepare(RabbitMQ._channels.consumer as amqp.Channel);
+		});
 	}
 
-	public static async produceTo(
+	public static async publish(
 		queue: string,
-		message: EventData
+		message: EventData,
+		options?: amqp.Options.Publish,
+		exchange?: IExchange
 	): Promise<void> {
-		if (!RabbitMQ.queues[queue]) {
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				`Queue ${queue} is not registered`
-			);
-		}
-
-		if (!RabbitMQ.channels.producer) {
+		if (!RabbitMQ._channels.producer) {
 			throw new ApplicationError(
 				500,
 				'RabbitMQ',
@@ -110,50 +74,35 @@ export default class RabbitMQ {
 			);
 		}
 
-		await RabbitMQ.queues[queue].asProducer(RabbitMQ.channels.producer);
-		RabbitMQ.queues[queue].send(
-			RabbitMQ.channels.producer,
-			JSON.stringify(message)
+		const channel = RabbitMQ._channels.producer;
+
+		if (exchange) {
+			await channel.assertExchange(
+				exchange.name(),
+				exchange.type(),
+				exchange.options()
+			);
+		}
+
+		channel.publish(
+			exchange?.name() || '',
+			queue,
+			Buffer.from(JSON.stringify(message)),
+			options
 		);
 	}
 
 	public static async close(): Promise<void> {
-		if (RabbitMQ.channels.consumer) {
-			await RabbitMQ.channels.consumer.close();
+		if (RabbitMQ._channels.consumer) {
+			await RabbitMQ._channels.consumer.close();
 		}
 
-		if (RabbitMQ.channels.producer) {
-			await RabbitMQ.channels.producer.close();
+		if (RabbitMQ._channels.producer) {
+			await RabbitMQ._channels.producer.close();
 		}
 
-		if (RabbitMQ.conn) {
-			await RabbitMQ.conn.close();
+		if (RabbitMQ._conn) {
+			await RabbitMQ._conn.close();
 		}
-	}
-
-	public static async handle(
-		queue: string,
-		message: string,
-		events: Array<EventHandler>
-	): Promise<void> {
-		if (message.length === 0) {
-			return;
-		}
-
-		const data = JSON.parse(message) as EventData;
-		await Promise.all(events.map(async handler => handler(queue, data)));
-	}
-
-	protected static async createChannel() {
-		if (!RabbitMQ.conn) {
-			throw new ApplicationError(
-				500,
-				'RabbitMQ',
-				'Connection is not established'
-			);
-		}
-
-		const channel = await RabbitMQ.conn.createChannel();
-		return channel;
 	}
 }
