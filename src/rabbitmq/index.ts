@@ -1,28 +1,16 @@
 import amqp from 'amqplib';
 import ApplicationError from '@/exceptions/ApplicationError';
-import Queue from './Queue';
-
-export interface EventData {
-	event: string;
-	payload: Record<string, any>;
-}
-
-export type EventHandler = (
-	queue: string,
-	data: EventData
-) => Promise<boolean>;
+import { EventData, EventHandler, IQueue } from './BaseQueue';
 
 export default class RabbitMQ {
 	protected static conn?: amqp.Connection;
 
 	protected static channels: {
-		consumer: amqp.Channel;
-		producer: amqp.Channel;
-	};
+		consumer?: amqp.Channel;
+		producer?: amqp.Channel;
+	} = {};
 
-	protected static queues: Record<string, Queue> = {};
-
-	protected static e: Array<EventHandler> = [];
+	protected static queues: Record<string, IQueue> = {};
 
 	public static async connect(
 		host: string,
@@ -49,12 +37,7 @@ export default class RabbitMQ {
 		}
 	}
 
-	public static registerEvent(e: EventHandler) {
-		RabbitMQ.e.push(e);
-		return RabbitMQ;
-	}
-
-	public static registerQueue(queue: Queue) {
+	public static register(queue: IQueue) {
 		this.queues[queue.name()] = queue;
 		return RabbitMQ;
 	}
@@ -68,22 +51,36 @@ export default class RabbitMQ {
 			);
 		}
 
-		RabbitMQ.queues[queue].assert(RabbitMQ.channels.consumer);
-		RabbitMQ.channels.consumer.consume(
-			queue,
+		if (!RabbitMQ.channels.consumer) {
+			throw new ApplicationError(
+				500,
+				'RabbitMQ',
+				'Consumer channel is not initialized'
+			);
+		}
+
+		const channel = RabbitMQ.channels.consumer;
+
+		await RabbitMQ.queues[queue].asConsumer(channel);
+		channel.consume(
+			RabbitMQ.queues[queue].name(),
 			msg => {
 				if (msg) {
-					RabbitMQ.handle(queue, msg.content.toString())
+					RabbitMQ.handle(
+						RabbitMQ.queues[queue].name(),
+						msg.content.toString(),
+						RabbitMQ.queues[queue].events()
+					)
 						.then(
 							() => {
-								RabbitMQ.channels.consumer.ack(msg);
+								channel.ack(msg);
 							},
 							() => {
-								RabbitMQ.channels.consumer.nack(msg);
+								channel.nack(msg);
 							}
 						)
 						.catch(() => {
-							RabbitMQ.channels.consumer.nack(msg);
+							channel.nack(msg);
 						});
 				}
 			},
@@ -105,7 +102,15 @@ export default class RabbitMQ {
 			);
 		}
 
-		RabbitMQ.queues[queue].assert(RabbitMQ.channels.producer);
+		if (!RabbitMQ.channels.producer) {
+			throw new ApplicationError(
+				500,
+				'RabbitMQ',
+				'Consumer channel is not initialized'
+			);
+		}
+
+		await RabbitMQ.queues[queue].asProducer(RabbitMQ.channels.producer);
 		RabbitMQ.queues[queue].send(
 			RabbitMQ.channels.producer,
 			JSON.stringify(message)
@@ -113,25 +118,30 @@ export default class RabbitMQ {
 	}
 
 	public static async close(): Promise<void> {
-		if (RabbitMQ.conn) {
+		if (RabbitMQ.channels.consumer) {
 			await RabbitMQ.channels.consumer.close();
+		}
+
+		if (RabbitMQ.channels.producer) {
 			await RabbitMQ.channels.producer.close();
+		}
+
+		if (RabbitMQ.conn) {
 			await RabbitMQ.conn.close();
 		}
 	}
 
 	public static async handle(
 		queue: string,
-		message: string
+		message: string,
+		events: Array<EventHandler>
 	): Promise<void> {
 		if (message.length === 0) {
 			return;
 		}
 
 		const data = JSON.parse(message) as EventData;
-		await Promise.all(
-			RabbitMQ.e.map(async handler => handler(queue, data))
-		);
+		await Promise.all(events.map(async handler => handler(queue, data)));
 	}
 
 	protected static async createChannel() {

@@ -1,25 +1,13 @@
 import amqp from 'amqplib';
+import BaseQueue, { IQueue } from './BaseQueue';
 
-export default class Queue {
-	protected _name: string;
-
-	protected _options: amqp.Options.AssertQueue;
-
-	constructor(name: string, options: amqp.Options.AssertQueue) {
-		this._name = name;
-		this._options = options;
-	}
-
-	public name() {
-		return this._name;
-	}
-
-	public options() {
-		return this._options;
-	}
-
-	public async assert(channel: amqp.Channel) {
+export default class Queue extends BaseQueue implements IQueue {
+	public async asConsumer(channel: amqp.Channel) {
 		await channel.assertQueue(this._name, this._options);
+	}
+
+	public async asProducer(channel: amqp.Channel) {
+		await this.asConsumer(channel);
 	}
 
 	public send(
